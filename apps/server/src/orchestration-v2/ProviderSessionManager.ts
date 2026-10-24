@@ -1926,6 +1926,61 @@ export const layerWithOptions = (
           ),
       );
 
+      const persistIdlePresentation = Effect.fn("ProviderSessionManager.persistIdlePresentation")(
+        function* (entry: LiveSessionEntry, offered: OrchestrationV2ProviderThread) {
+          const threadId = offered.appThreadId;
+          if (threadId === null || offered.providerSessionId !== entry.runtime.providerSessionId)
+            return;
+          while (true) {
+            const current = (yield* Ref.get(sessions)).get(
+              sessionKey(entry.runtime.providerSessionId),
+            );
+            if (current?.runtime !== entry.runtime || !current.attachedThreadIds.has(threadId))
+              return;
+            const projection = yield* projectionStore.getThreadRecords(threadId, [
+              "providerThreads",
+            ]);
+            const expected = projection.providerThreads.find((thread) => thread.id === offered.id);
+            // Setup persists its returned thread separately. Never recreate a detached
+            // binding or overwrite lifecycle/run ownership from a stale idle snapshot.
+            if (
+              !expected ||
+              expected.providerSessionId !== offered.providerSessionId ||
+              expected.nativeThreadRef?.nativeId !== offered.nativeThreadRef?.nativeId
+            )
+              return;
+            const occurredAt = yield* DateTime.now;
+            const result = yield* eventSink.writeIfProviderThreadUnchanged({
+              expected,
+              events: [
+                {
+                  id: yield* idAllocator.allocate.event({
+                    threadId,
+                    providerSessionId: entry.runtime.providerSessionId,
+                  }),
+                  type: "provider-thread.updated",
+                  threadId,
+                  driver: entry.runtime.driver,
+                  providerInstanceId: entry.runtime.instanceId,
+                  occurredAt,
+                  payload: {
+                    ...expected,
+                    ...(offered.runtimeCatalog === undefined
+                      ? {}
+                      : { runtimeCatalog: offered.runtimeCatalog }),
+                    ...(offered.extensionUi === undefined
+                      ? {}
+                      : { extensionUi: offered.extensionUi }),
+                    updatedAt: occurredAt,
+                  },
+                },
+              ],
+            });
+            if (result.committed) return;
+          }
+        },
+      );
+
       const startEventPump = (entry: LiveSessionEntry) => {
         let stoppedByProvider = false;
         return entry.runtime.events.pipe(
@@ -1992,6 +2047,26 @@ export const layerWithOptions = (
                   // (project trust, login, or session-switch hooks). Persist
                   // their runless request artifacts directly so the normal T3
                   // request UI can answer them and unblock session setup.
+                  // Active runs already ingest presentation events. With no run,
+                  // merge only presentation fields under the store's compare-and-swap.
+                  if (
+                    event.type === "provider_thread.updated" &&
+                    (event.providerThread.runtimeCatalog !== undefined ||
+                      event.providerThread.extensionUi !== undefined) &&
+                    (yield* Ref.get(entry.eventSubscribers)).size === 0
+                  ) {
+                    yield* persistIdlePresentation(entry, event.providerThread).pipe(
+                      Effect.mapError(
+                        (cause) =>
+                          new ProviderAdapter.ProviderAdapterEventStreamError({
+                            driver: entry.runtime.driver,
+                            providerSessionId: entry.runtime.providerSessionId,
+                            cause,
+                          }),
+                      ),
+                    );
+                    return;
+                  }
                   const threadId = sessionScopedRuntimeRequestThreadId(event);
                   if (threadId !== undefined) {
                     yield* Effect.gen(function* () {

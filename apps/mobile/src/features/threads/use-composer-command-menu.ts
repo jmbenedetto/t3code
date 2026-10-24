@@ -4,6 +4,7 @@ import type {
   ProjectId,
   ProviderInteractionMode,
   ServerProvider,
+  OrchestrationV2ProviderThread,
   ThreadId,
   ThreadPullRequestLink,
 } from "@t3tools/contracts";
@@ -178,6 +179,7 @@ export function useComposerCommandMenu({
   pullRequestRepository = null,
   threadPullRequests,
   selectedProviderStatus,
+  providerThread,
   hasThread,
   hasCompactableConversation,
   offersUsageLimits = false,
@@ -196,6 +198,7 @@ export function useComposerCommandMenu({
   readonly pullRequestRepository?: string | null;
   readonly threadPullRequests?: ReadonlyArray<ThreadPullRequestLink>;
   readonly selectedProviderStatus: ServerProvider | null;
+  readonly providerThread?: OrchestrationV2ProviderThread | null;
   readonly hasThread: boolean;
   readonly hasCompactableConversation: boolean;
   readonly offersUsageLimits?: boolean;
@@ -236,7 +239,7 @@ export function useComposerCommandMenu({
   }, [draftMessage, ownerKey]);
 
   const skills = selectedProviderStatus
-    ? resolveProviderSkillsForCwd(selectedProviderStatus, projectCwd)
+    ? resolveProviderSkillsForCwd(selectedProviderStatus, projectCwd, providerThread)
     : [];
   const refreshProviders = useAtomCommand(serverEnvironment.refreshProviders, {
     reportFailure: false,
@@ -392,7 +395,11 @@ export function useComposerCommandMenu({
           ? {
               ...selectedProviderStatus,
               slashCommands: getProviderSlashCommandsForSlashMenu(
-                resolveProviderSlashCommandsForCwd(selectedProviderStatus, projectCwd),
+                resolveProviderSlashCommandsForCwd(
+                  selectedProviderStatus,
+                  projectCwd,
+                  providerThread,
+                ),
                 visibleSkills,
               ),
             }

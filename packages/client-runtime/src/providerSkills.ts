@@ -3,6 +3,8 @@ import {
   type ServerProvider,
   type ServerProviderSkill,
   type ServerProviderSlashCommand,
+  type OrchestrationV2ProviderThread,
+  type OrchestrationV2ThreadProjection,
 } from "@t3tools/contracts";
 
 export type ProviderSkillSourceKind = "app" | "repo" | "project" | "personal" | "system" | "other";
@@ -117,13 +119,78 @@ export function hasCurrentProviderWorkspaceSnapshot(
 export function resolveProviderSkillsForCwd(
   provider: ServerProvider,
   cwd: string | null | undefined,
+  thread?: OrchestrationV2ProviderThread | null,
 ): ServerProvider["skills"] {
+  if (
+    thread?.providerInstanceId === provider.instanceId &&
+    currentProviderPresentation(thread, thread.runtimeCatalog)
+  )
+    return thread.runtimeCatalog!.skills;
   return resolveProviderWorkspaceSnapshot(provider, cwd)?.skills ?? provider.skills;
 }
 
 export function resolveProviderSlashCommandsForCwd(
   provider: ServerProvider,
   cwd: string | null | undefined,
+  thread?: OrchestrationV2ProviderThread | null,
 ): ServerProvider["slashCommands"] {
+  if (
+    thread?.providerInstanceId === provider.instanceId &&
+    currentProviderPresentation(thread, thread.runtimeCatalog)
+  )
+    return thread.runtimeCatalog!.slashCommands;
   return resolveProviderWorkspaceSnapshot(provider, cwd)?.slashCommands ?? provider.slashCommands;
+}
+
+export function currentProviderPresentation(
+  thread: OrchestrationV2ProviderThread,
+  presentation:
+    | { readonly providerSessionId: string; readonly nativeThreadId: string }
+    | null
+    | undefined,
+): boolean {
+  return (
+    presentation != null &&
+    presentation.providerSessionId === thread.providerSessionId &&
+    presentation.nativeThreadId === thread.nativeThreadRef?.nativeId
+  );
+}
+
+export function resolveProviderExtensionUi(
+  thread: OrchestrationV2ProviderThread | null | undefined,
+  instanceId: ServerProvider["instanceId"] | null | undefined,
+) {
+  const ui = thread?.extensionUi;
+  return thread?.providerInstanceId === instanceId && ui && currentProviderPresentation(thread, ui)
+    ? ui
+    : null;
+}
+
+export function resolveThreadProviderPresentation(
+  projection:
+    | {
+        readonly thread: Pick<
+          OrchestrationV2ThreadProjection["thread"],
+          "id" | "activeProviderThreadId" | "providerInstanceId"
+        >;
+        readonly providerThreads: OrchestrationV2ThreadProjection["providerThreads"];
+        readonly providerSessions: ReadonlyArray<
+          Pick<OrchestrationV2ThreadProjection["providerSessions"][number], "id" | "status">
+        >;
+      }
+    | null
+    | undefined,
+): OrchestrationV2ProviderThread | null {
+  if (!projection) return null;
+  const thread = projection.providerThreads.find(
+    (candidate) =>
+      candidate.id === projection.thread.activeProviderThreadId &&
+      candidate.appThreadId === projection.thread.id &&
+      candidate.providerInstanceId === projection.thread.providerInstanceId,
+  );
+  if (!thread) return null;
+  const session = projection.providerSessions.find(
+    (session) => session.id === thread.providerSessionId,
+  );
+  return session && session.status !== "stopped" && session.status !== "error" ? thread : null;
 }

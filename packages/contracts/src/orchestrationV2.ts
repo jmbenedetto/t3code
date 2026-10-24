@@ -73,6 +73,7 @@ import {
   ToolActivitySource,
 } from "./providerRuntime.ts";
 import { ThreadTokenUsageSnapshot } from "./providerRuntime.ts";
+import { ServerProviderSkill, ServerProviderSlashCommand } from "./server.ts";
 
 export const OrchestrationV2Actor = Schema.Literals(["user", "agent", "system"]);
 export type OrchestrationV2Actor = typeof OrchestrationV2Actor.Type;
@@ -898,6 +899,41 @@ export const OrchestrationV2ProviderGoal = Schema.Struct({
 });
 export type OrchestrationV2ProviderGoal = typeof OrchestrationV2ProviderGoal.Type;
 
+const ProviderPresentationScope = {
+  providerSessionId: ProviderSessionId,
+  nativeThreadId: TrimmedNonEmptyString,
+};
+
+export const OrchestrationV2ProviderCatalog = Schema.Struct({
+  ...ProviderPresentationScope,
+  skills: Schema.Array(ServerProviderSkill),
+  slashCommands: Schema.Array(ServerProviderSlashCommand),
+  pending: Schema.Boolean,
+});
+export type OrchestrationV2ProviderCatalog = typeof OrchestrationV2ProviderCatalog.Type;
+
+export const OrchestrationV2ProviderExtensionUi = Schema.Struct({
+  ...ProviderPresentationScope,
+  title: Schema.NullOr(Schema.String),
+  statuses: Schema.Array(Schema.Struct({ key: Schema.String, text: Schema.String })),
+  widgets: Schema.Array(
+    Schema.Struct({
+      key: Schema.String,
+      lines: Schema.Array(Schema.String),
+      placement: Schema.Literals(["aboveEditor", "belowEditor"]),
+    }),
+  ),
+  editor: Schema.NullOr(Schema.Struct({ id: Schema.String, text: Schema.String })),
+  notices: Schema.Array(
+    Schema.Struct({
+      id: Schema.String,
+      message: Schema.String,
+      level: Schema.Literals(["info", "warning", "error"]),
+    }),
+  ),
+});
+export type OrchestrationV2ProviderExtensionUi = typeof OrchestrationV2ProviderExtensionUi.Type;
+
 export const OrchestrationV2ProviderThread = Schema.Struct({
   id: ProviderThreadId,
   driver: ProviderDriverKind,
@@ -930,6 +966,9 @@ export const OrchestrationV2ProviderThread = Schema.Struct({
   goal: Schema.optional(Schema.NullOr(OrchestrationV2ProviderGoal)).pipe(
     Schema.withDecodingDefault(Effect.succeed(null)),
   ),
+  // The scope prevents a fork or resumed process from inheriting a stale native catalog/UI.
+  runtimeCatalog: Schema.optional(OrchestrationV2ProviderCatalog),
+  extensionUi: Schema.optional(OrchestrationV2ProviderExtensionUi),
   createdAt: Schema.DateTimeUtc,
   updatedAt: Schema.DateTimeUtc,
 });

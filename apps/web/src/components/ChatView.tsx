@@ -223,7 +223,10 @@ import {
   serverEnvironment,
 } from "../state/server";
 import { threadEnvironment } from "../state/threads";
-import { resolveProviderSkillsForCwd } from "@t3tools/client-runtime/providerSkills";
+import {
+  resolveProviderSkillsForCwd,
+  resolveThreadProviderPresentation,
+} from "@t3tools/client-runtime/providerSkills";
 import { vcsEnvironment } from "../state/vcs";
 import {
   type EnvironmentPresentation,
@@ -503,6 +506,7 @@ export default function ChatView(props: ChatViewProps) {
   const activeProviderThread = serverProjection?.providerThreads.find(
     (thread) => thread.id === serverProjection.thread.activeProviderThreadId,
   );
+  const providerPresentationThread = resolveThreadProviderPresentation(serverProjection);
   const activeThreadLiveTokenUsage = latestProviderTurnTokenUsage(
     serverProjection?.providerTurns ?? [],
     serverProjection,
@@ -2693,7 +2697,7 @@ export default function ChatView(props: ChatViewProps) {
   });
   const getShortcutContextStable = useStableCallback(getShortcutContext);
   const timelineSkills = activeProviderStatus
-    ? resolveProviderSkillsForCwd(activeProviderStatus, gitCwd)
+    ? resolveProviderSkillsForCwd(activeProviderStatus, gitCwd, providerPresentationThread)
     : EMPTY_PROVIDER_SKILLS;
   const threadFindControlsRef = useRef<ThreadFindControls | null>(null);
   const [isThreadFindActive, setIsThreadFindActive] = useState(false);
@@ -3491,6 +3495,7 @@ export default function ChatView(props: ChatViewProps) {
                           ) : null}
                           {!composerMounted ? null : (
                             <ChatComposer
+                              providerThread={providerPresentationThread}
                               canOperateThread={canOperateThread}
                               reportedModelSelection={reportedModelSelection}
                               multipleModelSelections={multipleModelSelections}

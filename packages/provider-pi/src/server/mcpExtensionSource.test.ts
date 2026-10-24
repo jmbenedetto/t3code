@@ -310,63 +310,79 @@ describe("Pi tool discovery permissions", () => {
     },
   );
 
-  it("allows discovery without confirmation and still gates the discovered tool", async () => {
-    type ToolCallHook = (
-      event: { toolName: string; input: unknown },
-      ctx: {
-        signal: AbortSignal;
+  it.each([
+    { name: "tool_search", path: "builtin:tool-search", mode: "approval-required" },
+    ...["read", "grep", "find", "ls"].map((name) => ({
+      name,
+      path: `builtin:${name}`,
+      mode: "approval-required",
+    })),
+    ...["edit", "write"].map((name) => ({
+      name,
+      path: `builtin:${name}`,
+      mode: "auto-accept-edits",
+    })),
+  ])(
+    "allows native $name in $mode and asks before an extension replaces it",
+    async ({ name, path, mode }) => {
+      type ToolCallHook = (
+        event: { toolName: string; input: unknown },
+        ctx: {
+          signal: AbortSignal;
+          ui: {
+            confirm: (
+              title: string,
+              detail: string,
+              options: { signal: AbortSignal },
+            ) => Promise<boolean>;
+          };
+        },
+      ) => Promise<{ block: true; reason: string } | undefined>;
+      let toolCall: ToolCallHook | undefined;
+      let toolPath = path;
+      const source = NodeModule.stripTypeScriptTypes(
+        PI_T3_MCP_EXTENSION_SOURCE.replace(/^import .*;$/gm, "").replace(
+          "export default async function",
+          "async function",
+        ),
+      );
+      await NodeVM.runInNewContext(`${source}\nt3McpExtension(pi)`, {
+        process: { env: { T3_PI_RUNTIME_MODE: mode } },
+        pi: {
+          on: (name: string, handler: ToolCallHook) => {
+            if (name === "tool_call") toolCall = handler;
+          },
+          getAllTools: () => [{ name, sourceInfo: { path: toolPath } }],
+        },
+      });
+      assert.isDefined(toolCall);
+      const confirmations: string[] = [];
+      const controller = new AbortController();
+      const ctx = {
+        signal: controller.signal,
         ui: {
-          confirm: (
-            title: string,
-            detail: string,
-            options: { signal: AbortSignal },
-          ) => Promise<boolean>;
-        };
-      },
-    ) => Promise<{ block: true; reason: string } | undefined>;
-    let toolCall: ToolCallHook | undefined;
-    let searchPath = "builtin:tool-search";
-    const source = NodeModule.stripTypeScriptTypes(
-      PI_T3_MCP_EXTENSION_SOURCE.replace(/^import .*;$/gm, "").replace(
-        "export default async function",
-        "async function",
-      ),
-    );
-    await NodeVM.runInNewContext(`${source}\nt3McpExtension(pi)`, {
-      process: { env: { T3_PI_RUNTIME_MODE: "approval-required" } },
-      pi: {
-        on: (name: string, handler: ToolCallHook) => {
-          if (name === "tool_call") toolCall = handler;
+          confirm: async (title: string, _detail: string, options: { signal: AbortSignal }) => {
+            assert.strictEqual(options.signal, controller.signal);
+            confirmations.push(title);
+            return false;
+          },
         },
-        getAllTools: () => [{ name: "tool_search", sourceInfo: { path: searchPath } }],
-      },
-    });
-    assert.isDefined(toolCall);
-    const confirmations: string[] = [];
-    const controller = new AbortController();
-    const ctx = {
-      signal: controller.signal,
-      ui: {
-        confirm: async (title: string, _detail: string, options: { signal: AbortSignal }) => {
-          assert.strictEqual(options.signal, controller.signal);
-          confirmations.push(title);
-          return false;
-        },
-      },
-    };
-    assert.isUndefined(
-      await toolCall!({ toolName: "tool_search", input: { query: "preview_snapshot" } }, ctx),
-    );
-    assert.equal(confirmations.length, 0);
-    const result = await toolCall!({ toolName: "mcp__t3-code__preview_snapshot", input: {} }, ctx);
-    assert.equal(result?.block, true);
-    assert.deepEqual(confirmations, ["Allow mcp__t3-code__preview_snapshot?"]);
+      };
+      assert.isUndefined(await toolCall!({ toolName: name, input: {} }, ctx));
+      assert.equal(confirmations.length, 0);
+      const result = await toolCall!(
+        { toolName: "mcp__t3-code__preview_snapshot", input: {} },
+        ctx,
+      );
+      assert.equal(result?.block, true);
+      assert.deepEqual(confirmations, ["Allow mcp__t3-code__preview_snapshot?"]);
 
-    searchPath = "/extensions/custom-search.ts";
-    const replaced = await toolCall!({ toolName: "tool_search", input: {} }, ctx);
-    assert.equal(replaced?.block, true);
-    assert.equal(confirmations.at(-1), "Allow tool_search?");
-  });
+      toolPath = "/extensions/replacement.ts";
+      const replaced = await toolCall!({ toolName: name, input: {} }, ctx);
+      assert.equal(replaced?.block, true);
+      assert.equal(confirmations.at(-1), `Allow ${name}?`);
+    },
+  );
 });
 
 async function loadRequestHook(): Promise<RequestHook> {

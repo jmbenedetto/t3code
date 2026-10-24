@@ -1,4 +1,6 @@
 import { useSidebarWorkspaceTabs } from "../workspace/useSystemWorkspaceTabBar";
+import { ProviderExtensionPanel } from "./ProviderExtensionPanel";
+import { resolveProviderExtensionUi } from "@t3tools/client-runtime/providerSkills";
 import { Button } from "../../components/ui/Button";
 import * as Dialog from "../../components/ui/Dialog";
 import type { ComposerTextPaste } from "../../native/T3ComposerEditor.types";
@@ -17,6 +19,7 @@ import {
   type EnvironmentId,
   type MessageId,
   type ModelSelection,
+  type OrchestrationV2ProviderThread,
   type ProviderInteractionMode,
   type RuntimeMode,
   type ServerConfig as T3ServerConfig,
@@ -229,6 +232,7 @@ export function useCompactComposerEditor(text: ScaledTextRole, value: string) {
 }
 
 export interface ThreadComposerProps {
+  readonly providerThread?: OrchestrationV2ProviderThread | null;
   readonly isDraft?: boolean;
   readonly canOperateThread: boolean;
   readonly placeholder: string;
@@ -523,6 +527,10 @@ export const ThreadComposer = function ThreadComposer(props: ThreadComposerProps
       ) ?? null
     );
   })();
+  const providerExtensionUi = resolveProviderExtensionUi(
+    props.providerThread,
+    selectedProviderStatus?.instanceId,
+  );
   const openDraftDocument = (attachment: ComposerDocumentAttachment) => {
     Keyboard.dismiss();
     navigation.navigate("ThreadAttachment", {
@@ -558,6 +566,7 @@ export const ThreadComposer = function ThreadComposer(props: ThreadComposerProps
   };
 
   const composerMenu = useComposerCommandMenu({
+    providerThread: props.providerThread ?? null,
     draftMessage: draftMessage,
     ownerKey: composerDraftKey,
     environmentId: props.environmentId,
@@ -893,6 +902,20 @@ export const ThreadComposer = function ThreadComposer(props: ThreadComposerProps
         style={{ maxWidth: props.contentMaxWidth }}
       >
         {props.draftControls}
+        <ProviderExtensionPanel
+          key={`${providerExtensionUi?.providerSessionId}:${providerExtensionUi?.nativeThreadId}:above`}
+          ui={providerExtensionUi}
+          placement="aboveEditor"
+          canApply={
+            props.canOperateThread &&
+            !isSubmissionLocked &&
+            !queuedEdit &&
+            !props.isDraft &&
+            !props.selectedThread.hasPendingApprovals &&
+            !props.selectedThread.hasPendingUserInput
+          }
+          onApply={props.onChangeDraftMessage}
+        />
         {!isSubmissionLocked &&
         composerMenu.trigger &&
         (composerMenu.items.length > 0 || composerMenu.trigger.kind === "pull-request") ? (
@@ -1271,6 +1294,13 @@ export const ThreadComposer = function ThreadComposer(props: ThreadComposerProps
             </ComposerDictationToolbar>
           </Animated.View>
         </ComposerSurface>
+        <ProviderExtensionPanel
+          key={`${providerExtensionUi?.providerSessionId}:${providerExtensionUi?.nativeThreadId}:below`}
+          ui={providerExtensionUi}
+          placement="belowEditor"
+          canApply={false}
+          onApply={() => undefined}
+        />
 
         {props.connectionState === "connected" && !props.canOperateThread ? (
           <Text className="pt-2 text-xs text-foreground-muted">

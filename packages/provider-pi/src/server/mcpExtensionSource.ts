@@ -303,11 +303,12 @@ export default async function t3McpExtension(pi: ExtensionAPI) {
   // Pi deliberately leaves permission policy to extensions. T3's injected
   // bridge uses Pi's public blocking tool hook so the shared runtime modes
   // keep their normal meaning without replacing or shadowing Pi's runtime.
-  // Only Pi's own search is known to be read-only. An extension that replaces
-  // it keeps the name, and cannot discover deferred tools either.
-  const hasBuiltinToolSearch = () =>
+  // Extensions may replace built-in names. Only Pi's own implementation
+  // inherits the built-in read/edit policy; replacements need approval.
+  const isBuiltinTool = (name: string) =>
     typeof pi.getAllTools === "function" &&
-    pi.getAllTools().some((tool) => tool.name === "tool_search" && tool.sourceInfo?.path === "builtin:tool-search");
+    pi.getAllTools().some((tool) => tool.name === name &&
+      tool.sourceInfo?.path === "builtin:" + (name === "tool_search" ? "tool-search" : name));
 
   const readOnlyMcpTools = new Set<string>();
   const isReadOnlyMcpTool = (name: string) => {
@@ -323,10 +324,10 @@ export default async function t3McpExtension(pi: ExtensionAPI) {
   pi.on("tool_call", async (event, ctx) => {
     const mode = runtimeMode();
     if (mode === "full-access") return;
-    if ((event.toolName === "tool_search" ? hasBuiltinToolSearch() : READ_ONLY_TOOLS.has(event.toolName)) || isReadOnlyMcpTool(event.toolName)) {
+    if (((event.toolName === "tool_search" || READ_ONLY_TOOLS.has(event.toolName)) && isBuiltinTool(event.toolName)) || isReadOnlyMcpTool(event.toolName)) {
       return;
     }
-    if (mode === "auto-accept-edits" && FILE_CHANGE_TOOLS.has(event.toolName)) {
+    if (mode === "auto-accept-edits" && FILE_CHANGE_TOOLS.has(event.toolName) && isBuiltinTool(event.toolName)) {
       return;
     }
     const approved = await ctx.ui.confirm(
@@ -424,7 +425,7 @@ export default async function t3McpExtension(pi: ExtensionAPI) {
   const reconcileDiscovery = (ctx: Pick<ExtensionContext, "model">) => {
     if (!supportsExposure) return;
     // A disabled or replaced search builtin cannot discover deferred tools.
-    const hasToolSearch = hasBuiltinToolSearch();
+    const hasToolSearch = isBuiltinTool("tool_search");
     const exposureChanged = deferOptionalTools !== hasToolSearch;
     deferOptionalTools = hasToolSearch;
     if (exposureChanged) registerTools();

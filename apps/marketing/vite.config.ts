@@ -8,7 +8,11 @@ export default defineConfig({
       // keeps a task out of the cache. Its real inputs are tracked as usual.
       typecheck: {
         command: "astro check",
-        cache: { input: [{ auto: true }, "!.astro/**"] },
+        cache: {
+          input: [{ auto: true }, "!.astro/**"],
+          // Cache location and telemetry do not change Astro diagnostics.
+          untrackedEnv: ["XDG_CONFIG_HOME", "ASTRO_TELEMETRY_DISABLED"],
+        },
       },
     },
   },

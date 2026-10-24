@@ -21,7 +21,6 @@ import {
 import * as Cause from "effect/Cause";
 import * as DateTime from "effect/DateTime";
 import * as Deferred from "effect/Deferred";
-import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Fiber from "effect/Fiber";
@@ -167,6 +166,7 @@ interface FakePi {
   readonly vetoNextNewSession: () => void;
   readonly allRequests: () => ReadonlyArray<PiRpcRecord>;
   readonly queueStats: (data: unknown) => void;
+  readonly queueCommands: (commands: ReadonlyArray<unknown>) => void;
   readonly closeStdout: Effect.Effect<void>;
   readonly lastSpawn: () => {
     readonly args: ReadonlyArray<string>;
@@ -199,6 +199,7 @@ const makeFakePi: Effect.Effect<FakePi> = Effect.gen(function* () {
   const messagesQueue: Array<unknown> = [];
   const stateQueue: Array<Record<string, unknown>> = [];
   const statsQueue: Array<unknown> = [];
+  const commandsQueue: Array<ReadonlyArray<unknown>> = [];
   const allRequests: Array<PiRpcRecord> = [];
   let deferState = false;
   let deferredStateRequest: PiRpcRecord | undefined;
@@ -256,6 +257,8 @@ const makeFakePi: Effect.Effect<FakePi> = Effect.gen(function* () {
         return base;
       case "get_available_models":
         return { ...base, data: { models } };
+      case "get_commands":
+        return { ...base, data: { commands: commandsQueue.shift() ?? [] } };
       case "new_session": {
         const cancelled = vetoNewSession;
         vetoNewSession = false;
@@ -346,6 +349,7 @@ const makeFakePi: Effect.Effect<FakePi> = Effect.gen(function* () {
     spawner,
     emit,
     takeRequest,
+    queueCommands: (commands) => commandsQueue.push(commands),
     queueEntries: (data) => entriesQueue.push(data),
     queueMessages: (data) => messagesQueue.push(data),
     deferNextState: () => {
@@ -522,6 +526,172 @@ const startTurn = Effect.fnUntraced(function* (
 });
 
 describe("PiAdapterV2", () => {
+  it.effect(
+    "refreshes native catalogs on resume and handled reload without leaking session UI",
+    () =>
+      Effect.gen(function* () {
+        const fake = yield* makeFakePi;
+        fake.queueCommands([{ name: "skill:first", source: "skill", path: "/first/SKILL.md" }]);
+        const { runtime, takeEvent } = yield* openRuntime(fake);
+        const first = yield* runtime.ensureThread({
+          threadId: THREAD_ID,
+          modelSelection: modelSelection("default"),
+          runtimePolicy,
+        });
+        assert.deepEqual(
+          first.runtimeCatalog?.skills.map((skill) => skill.name),
+          ["first"],
+        );
+        yield* fake.emit({
+          type: "extension_ui_request",
+          id: "status-1",
+          method: "setStatus",
+          statusKey: "fixture",
+          statusText: "First only",
+        });
+        const decorated = yield* takeEvent(
+          (event) =>
+            event.type === "provider_thread.updated" &&
+            event.providerThread.extensionUi?.statuses.length === 1,
+        );
+        assert.equal(decorated.type, "provider_thread.updated");
+        fake.queueCommands([{ name: "skill:second", source: "skill", path: "/second/SKILL.md" }]);
+        const second = yield* runtime.ensureThread({
+          threadId: ThreadId.make("second-thread"),
+          modelSelection: modelSelection("default"),
+          runtimePolicy,
+        });
+        assert.deepEqual(
+          second.runtimeCatalog?.skills.map((skill) => skill.name),
+          ["second"],
+        );
+        assert.deepEqual(second.extensionUi?.statuses, []);
+        fake.queueCommands([{ name: "skill:resumed", source: "skill", path: "/resumed/SKILL.md" }]);
+        fake.queueState({ sessionFile: first.nativeThreadRef!.nativeId });
+        const resumed = yield* runtime.resumeThread({ providerThread: first });
+        assert.deepEqual(
+          resumed.runtimeCatalog?.skills.map((skill) => skill.name),
+          ["resumed"],
+        );
+        assert.deepEqual(resumed.extensionUi?.statuses, []);
+        assert.equal(resumed.runtimeCatalog?.nativeThreadId, resumed.nativeThreadRef?.nativeId);
+        fake.queueCommands([{ name: "skill:before-reload", source: "skill" }]);
+        yield* startTurn(runtime, resumed);
+        yield* fake.takeRequest("prompt");
+        fake.queueCommands([{ name: "skill:after-reload", source: "skill" }]);
+        yield* fake.emit({
+          type: "response",
+          command: "prompt",
+          success: true,
+          data: { disposition: "handled" },
+        });
+        const reloaded = yield* takeEvent(
+          (event) =>
+            event.type === "provider_thread.updated" &&
+            event.providerThread.runtimeCatalog?.skills[0]?.name === "after-reload",
+        );
+        assert.equal(reloaded.type, "provider_thread.updated");
+      }).pipe(Effect.scoped, Effect.provide(layerTest)),
+  );
+
+  it.effect("streams idle extension presentation updates without requiring an active turn", () =>
+    Effect.gen(function* () {
+      const fake = yield* makeFakePi;
+      const { runtime, takeEvent } = yield* openRuntime(fake);
+      const thread = yield* runtime.ensureThread({
+        threadId: THREAD_ID,
+        modelSelection: modelSelection("default"),
+        runtimePolicy,
+      });
+      for (const event of [
+        { id: "title", method: "setTitle", title: "Fixture title" },
+        {
+          id: "widget",
+          method: "setWidget",
+          widgetKey: "fixture",
+          widgetLines: ["First", "Second"],
+          widgetPlacement: "belowEditor",
+        },
+        { id: "editor", method: "set_editor_text", text: "  Exact draft\n" },
+        { id: "notice", method: "notify", message: "Idle notice", notifyType: "warning" },
+      ]) {
+        yield* fake.emit({ type: "extension_ui_request", ...event });
+        const updated = yield* takeEvent(
+          (item) =>
+            item.type === "provider_thread.updated" &&
+            (item.providerThread.extensionUi?.editor?.id === event.id ||
+              item.providerThread.extensionUi?.notices.some((notice) => notice.id === event.id) ===
+                true ||
+              (event.id === "title" &&
+                item.providerThread.extensionUi?.title === "Fixture title") ||
+              (event.id === "widget" && item.providerThread.extensionUi?.widgets.length === 1)),
+        );
+        if (updated.type !== "provider_thread.updated")
+          return yield* Effect.die("Expected UI update");
+        assert.equal(updated.providerThread.extensionUi?.providerSessionId, SESSION_ID);
+        assert.equal(
+          updated.providerThread.extensionUi?.nativeThreadId,
+          thread.nativeThreadRef?.nativeId,
+        );
+        if (event.id === "editor")
+          assert.equal(updated.providerThread.extensionUi?.editor?.text, "  Exact draft\n");
+      }
+    }).pipe(Effect.scoped, Effect.provide(layerTest)),
+  );
+
+  it.effect.each([false, true])(
+    "uses authoritative final text and thinking when earlier streaming content exists=%s",
+    (streamed) =>
+      Effect.gen(function* () {
+        const fake = yield* makeFakePi;
+        const { runtime, takeEvent } = yield* openRuntime(fake);
+        const providerThread = yield* runtime.ensureThread({
+          threadId: THREAD_ID,
+          modelSelection: modelSelection("default"),
+          runtimePolicy,
+        });
+        yield* startTurn(runtime, providerThread);
+        yield* fake.takeRequest("prompt");
+        yield* fake.emit({ type: "agent_start" });
+        yield* fake.emit({ type: "message_start", message: { role: "assistant" } });
+        if (streamed) {
+          yield* fake.emit({
+            type: "message_update",
+            assistantMessageEvent: { type: "thinking_end", contentIndex: 0, content: "Draft" },
+          });
+          yield* fake.emit({
+            type: "message_update",
+            assistantMessageEvent: { type: "text_end", contentIndex: 1, content: "Partial" },
+          });
+        }
+        yield* fake.emit({
+          type: "message_end",
+          message: {
+            role: "assistant",
+            content: [
+              { type: "thinking", thinking: "Final reasoning" },
+              { type: "text", text: "Final answer" },
+            ],
+            stopReason: "stop",
+          },
+        });
+        yield* fake.emit({ type: "agent_settled" });
+        const messages: string[] = [];
+        const reasoning: string[] = [];
+        while (true) {
+          const event = yield* takeEvent(
+            (event) => event.type === "turn_item.updated" || event.type === "turn.terminal",
+          );
+          if (event.type === "turn.terminal") break;
+          if (event.type !== "turn_item.updated") continue;
+          if (event.turnItem.type === "assistant_message") messages.push(event.turnItem.text);
+          if (event.turnItem.type === "reasoning") reasoning.push(event.turnItem.text);
+        }
+        assert.equal(messages.at(-1), "Final answer");
+        assert.equal(reasoning.at(-1), "Final reasoning");
+      }).pipe(Effect.scoped, Effect.provide(layerTest)),
+  );
+
   it.effect.each([false, true])(
     "completes a resumed user turn before native wake events arrive, Pi streaming=%s",
     (streaming) =>
@@ -2797,39 +2967,46 @@ describe("PiAdapterV2", () => {
     }).pipe(Effect.scoped, Effect.provide(layerTest)),
   );
 
-  it.effect("settles a command-only prompt from its deferred ack and idle probe", () =>
-    Effect.gen(function* () {
-      const fake = yield* makeFakePi;
-      const { runtime, takeEvent } = yield* openRuntime(fake);
-      const providerThread = yield* runtime.ensureThread({
-        threadId: THREAD_ID,
-        modelSelection: modelSelection("default"),
-        runtimePolicy,
-      });
-      yield* startTurn(runtime, providerThread, "default", [], "/command-only");
-      yield* fake.takeRequest("prompt");
-      yield* fake.emit({
-        type: "extension_ui_request",
-        id: "ui-cmd",
-        method: "notify",
-        message: "Command finished\nwith details",
-        notifyType: "info",
-      });
-      yield* fake.emit({ type: "response", command: "prompt", success: true });
-      const notice = yield* takeEvent(
-        (event) =>
-          (event.type === "turn_item.updated" && event.turnItem.type === "system_notice") ||
-          event.type === "turn.terminal",
-      );
-      assert.isTrue(
-        notice.type === "turn_item.updated" &&
-          notice.turnItem.type === "system_notice" &&
-          notice.turnItem.status === "completed" &&
-          notice.turnItem.message === "Command finished\nwith details",
-      );
-      const terminal = yield* takeEvent((event) => event.type === "turn.terminal");
-      assert.isTrue(terminal.type === "turn.terminal" && terminal.status === "completed");
-    }).pipe(Effect.scoped, Effect.provide(layerTest)),
+  it.effect.each(["/command-only", "Text handled by an input extension"])(
+    "settles an extension-handled prompt from its deferred ack and idle probe: %s",
+    (text) =>
+      Effect.gen(function* () {
+        const fake = yield* makeFakePi;
+        const { runtime, takeEvent } = yield* openRuntime(fake);
+        const providerThread = yield* runtime.ensureThread({
+          threadId: THREAD_ID,
+          modelSelection: modelSelection("default"),
+          runtimePolicy,
+        });
+        yield* startTurn(runtime, providerThread, "default", [], text);
+        yield* fake.takeRequest("prompt");
+        yield* fake.emit({
+          type: "extension_ui_request",
+          id: "ui-cmd",
+          method: "notify",
+          message: "Command finished\nwith details",
+          notifyType: "info",
+        });
+        yield* fake.emit({
+          type: "response",
+          command: "prompt",
+          success: true,
+          data: { disposition: "handled" },
+        });
+        const notice = yield* takeEvent(
+          (event) =>
+            (event.type === "turn_item.updated" && event.turnItem.type === "system_notice") ||
+            event.type === "turn.terminal",
+        );
+        assert.isTrue(
+          notice.type === "turn_item.updated" &&
+            notice.turnItem.type === "system_notice" &&
+            notice.turnItem.status === "completed" &&
+            notice.turnItem.message === "Command finished\nwith details",
+        );
+        const terminal = yield* takeEvent((event) => event.type === "turn.terminal");
+        assert.isTrue(terminal.type === "turn.terminal" && terminal.status === "completed");
+      }).pipe(Effect.scoped, Effect.provide(layerTest)),
   );
 
   it.effect("leaves /compacted as an ordinary prompt", () =>

@@ -44,12 +44,61 @@ Switching providers uses portable conversation context. Extension
 dialogs appear in the T3 Code composer, and the composer context meter follows Pi's own usage
 reporting while a response streams and after it settles.
 
-Pi skills appear in the composer's `$` menu. This includes user skills and project skills that Pi
-loads for the current workspace; selecting one uses Pi's native skill expansion.
-
 Pi loads its normal user and project extensions. Blocking `select`, `confirm`, `input`, and `editor`
-dialogs work in T3 Code. Notifications appear in the work log. Pi terminal decoration such as
-titles, status lines, and widgets does not have a T3 Code equivalent.
+dialogs work in T3 Code. Notifications appear in the work log during a turn and in the composer
+while idle. Titles, keyed status lines, and string-array widgets appear in the web and mobile
+composer; widgets keep their above/below-editor placement. Display state is bounded to keep
+extension updates responsive. Editor-text updates appear as proposals with **Apply** and
+**Dismiss**. Apply replaces the current draft, including an explicitly empty draft; updates never
+overwrite typing automatically. These decorations are tied to the live native session.
+
+## Use Pi Skills
+
+Pi skills appear in the composer's `$` menu for the thread's workspace. Type `$` to select one or
+more skills, or start a message with `/skill:name` followed by your request. Pi also advertises
+skills to the model for automatic discovery. A skill with `disable-model-invocation: true` stays
+available for explicit use without being advertised to the model.
+
+Put each skill in a directory containing `SKILL.md` with `name` and `description` frontmatter.
+Pi discovers:
+
+- User skills in `~/.pi/agent/skills` and `~/.agents/skills` on the server.
+- Project skills in `.pi/skills` in the session's working directory.
+- Project `.agents/skills` in the working directory and its ancestors, stopping at the repository
+  root when one exists.
+- Additional skills configured through Pi settings, packages, or `--skill` launch arguments.
+
+`PI_CODING_AGENT_DIR` changes Pi's user configuration directory. Project discovery uses the
+thread's working directory, including its worktree, so a skill present only in another checkout
+will not appear. Skill contents and supporting files stay on the server; no copy into T3 Code's
+source or a GitHub fork is needed. Pi preserves skill name collisions and resolves references
+relative to each skill's directory. See [Pi's skill documentation](https://pi.dev/docs/latest/skills).
+
+Project skills and extensions follow [Pi's project trust rules](https://pi.dev/docs/latest/security#project-trust).
+RPC mode skips unapproved project resources when Pi has no saved trust decision. Review the
+project in Pi's terminal UI and use `/trust` if you want to save that decision. Alternatively,
+`--approve` in Pi's T3 launch arguments grants trust for each launched process without saving a
+decision; it enables all protected project resources, including extensions. T3 Code does not add
+this flag or change your trust store automatically.
+
+The running session supplies its own command and skill catalog, taking precedence over separate
+workspace discovery. T3 refreshes that catalog when the native session is registered or resumed,
+before a turn, and after it settles (including extension commands that consume input without a
+model reply). An empty session catalog stays empty instead of falling back to another session's
+skills. Before a session starts, menus use the provider's workspace discovery snapshot.
+
+After editing or adding skills, use **Restart agent session**. The native conversation is resumed
+and resources are loaded again; the menu refreshes from that process. Pi's terminal `/reload`
+command is not an RPC builtin. Extensions that expose a reload command through Pi's command API
+can reload resources in place; their updated menu is discovered when the command completes.
+Pi does not emit a general command-catalog-changed RPC event; arbitrary asynchronous changes are
+picked up at the next turn or session registration.
+
+Pi's RPC interface cannot render custom terminal components, themes, keyboard shortcuts, or
+editor component replacements. Text editor updates are supported as proposals, rather than
+replacing the browser or native editor component. Extension commands, prompt templates, tool hooks, and the supported dialogs remain available.
+Background title and content helpers run with extensions and tools disabled; models supplied only
+by an extension cannot be used for those helpers.
 
 ## Permission Modes
 
@@ -66,6 +115,9 @@ Threads that already stored Auto before Pi support was added behave and display 
 Changing the mode restarts the Pi provider session and resumes the same native conversation. The
 policy covers Pi tool calls; it is not an operating-system sandbox, and code that a trusted Pi
 extension runs outside a tool call remains governed by Pi's own extension trust model.
+An extension that replaces a built-in read or edit tool requires confirmation under Supervised
+or Auto-accept edits, even if it keeps the built-in tool's name. On older Pi versions that do not
+report tool provenance, these tools conservatively require confirmation too.
 
 T3 Code's `delegate_task` tool creates durable child threads in the shared subagent UI. If the user
 installs Pi's example `subagent` extension, T3 Code also shows its task progress and results in that
@@ -80,6 +132,7 @@ threads.
 - If discovery cannot complete, T3 Code keeps Pi available with the `Pi default` model. Start a
   thread to let the interactive Pi session handle any startup prompt.
 - If a project extension is missing, approve the project in Pi, then start a fresh provider session.
-- If a project skill is missing from the `$` menu, approve the project in Pi and refresh the provider.
+- If a project skill is missing from the `$` menu, approve the project in Pi and restart the agent
+  session. Refresh the provider for menus that have no running session yet.
 - The context meter appears once Pi reports usage for the thread. Some model providers only
   report usage when a response completes, so the meter can wait for the first reply.

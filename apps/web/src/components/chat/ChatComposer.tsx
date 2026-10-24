@@ -1,4 +1,5 @@
 import { useComposerTypingGuard } from "./useComposerTypingGuard";
+import { ProviderExtensionPanel } from "./ProviderExtensionPanel";
 import { insertAttachmentReferencesForDraft } from "./composerAttachmentReferences";
 import { DESKTOP_PASTE_AS_TEXT_EVENT } from "../../lib/desktopPasteAsText";
 import { runtimeModeConfig, runtimeModeOptions as runtimeModes } from "./runtimeModeConfig";
@@ -28,6 +29,7 @@ import type {
   RuntimeRequestId,
   ScopedThreadRef,
   ServerProvider,
+  OrchestrationV2ProviderThread,
   ThreadId,
 } from "@t3tools/contracts";
 import {
@@ -273,6 +275,7 @@ import type { ContextWindowSnapshot } from "../../lib/contextWindow";
 import {
   resolveProviderSkillsForCwd,
   resolveProviderSlashCommandsForCwd,
+  resolveProviderExtensionUi,
 } from "@t3tools/client-runtime/providerSkills";
 import { useDelayedStatus } from "../../hooks/useDelayedStatus";
 import { useMediaQuery } from "../../hooks/useMediaQuery";
@@ -387,6 +390,7 @@ export interface ChatComposerProps {
   activeThreadId: ThreadId | null;
   activeThreadEnvironmentId: EnvironmentId | undefined;
   activeThread: Thread | undefined;
+  providerThread?: OrchestrationV2ProviderThread | null;
   activeThreadShell: ThreadShell | null;
   promptHistoryMessages: ReadonlyArray<ChatMessage>;
   isServerThread: boolean;
@@ -1000,12 +1004,16 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
         (multipleModelSelections === null ? providerSendBlockReason : null)));
   const isSendDisabled = sendDisabledReason !== null;
   const selectedProviderStatus = selectedProviderEntry?.snapshot ?? null;
+  const providerExtensionUi = resolveProviderExtensionUi(
+    props.providerThread,
+    selectedProviderStatus?.instanceId,
+  );
   const compactCommandAvailable = providerSupportsManualCompaction(selectedProviderEntry);
   const selectedProviderSkills = selectedProviderStatus
-    ? resolveProviderSkillsForCwd(selectedProviderStatus, gitCwd)
+    ? resolveProviderSkillsForCwd(selectedProviderStatus, gitCwd, props.providerThread)
     : NO_PROVIDER_SKILLS;
   const selectedProviderSlashCommands = selectedProviderStatus
-    ? resolveProviderSlashCommandsForCwd(selectedProviderStatus, gitCwd)
+    ? resolveProviderSlashCommandsForCwd(selectedProviderStatus, gitCwd, props.providerThread)
     : NO_PROVIDER_SLASH_COMMANDS;
   const refreshWorkspaceSnapshotOnTyping = useProviderWorkspaceSnapshotRefresh({
     environmentId,
@@ -3487,6 +3495,19 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
       data-chat-composer-form="true"
       {...threadContextDropTargetProps()}
     >
+      <ProviderExtensionPanel
+        key={`${providerExtensionUi?.providerSessionId}:${providerExtensionUi?.nativeThreadId}:above`}
+        ui={providerExtensionUi}
+        placement="aboveEditor"
+        canApply={
+          canOperateThread &&
+          !isLiteralPendingAnswer &&
+          !activePendingApproval &&
+          typeof composerDraftTarget !== "string" &&
+          composerDraftTarget.threadId === props.providerThread?.appThreadId
+        }
+        onApply={(text) => editPromptFromTraitsStable(() => text)}
+      />
       {composerControlsCollapsed && restingControlsHost
         ? createPortal(
             <div
@@ -3995,6 +4016,13 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
           </div>
         </ComposerSurface.Main>
       </div>
+      <ProviderExtensionPanel
+        key={`${providerExtensionUi?.providerSessionId}:${providerExtensionUi?.nativeThreadId}:below`}
+        ui={providerExtensionUi}
+        placement="belowEditor"
+        canApply={false}
+        onApply={() => undefined}
+      />
     </form>
   );
 });

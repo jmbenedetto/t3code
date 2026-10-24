@@ -3502,3 +3502,73 @@ it.effect(
       assert.isFalse(denied?.capabilities?.has("device"));
     }),
 );
+
+it.effect(
+  "ProviderSessionManagerV2 persists idle provider presentation without a run subscriber",
+  () =>
+    Effect.gen(function* () {
+      const state = yield* Ref.make(emptyState);
+      yield* Effect.gen(function* () {
+        const eventSink = yield* EventSink.EventSinkV2;
+        const idAllocator = yield* IdAllocator.IdAllocatorV2;
+        const manager = yield* ProviderSessionManager.ProviderSessionManagerV2;
+        const projectionStore = yield* ProjectionStore.ProjectionStoreV2;
+        const now = yield* DateTime.now;
+        const threadId = ThreadId.make("idle-presentation-thread");
+        const providerSessionId = yield* idAllocator.allocate.providerSession({
+          providerInstanceId: modelSelection.instanceId,
+          threadId,
+        });
+        yield* eventSink.write({
+          events: [yield* makeThreadCreatedEvent({ idAllocator, threadId, now })],
+        });
+        yield* manager.open({ threadId, providerSessionId, modelSelection, runtimePolicy });
+        const providerThread = makeProviderThread({
+          idAllocator,
+          threadId,
+          providerSessionId,
+          now,
+        });
+        yield* eventSink.write({
+          events: [
+            {
+              id: yield* idAllocator.allocate.event({ threadId, providerSessionId }),
+              type: "provider-thread.updated",
+              threadId,
+              driver: CODEX_DRIVER,
+              providerInstanceId: modelSelection.instanceId,
+              occurredAt: now,
+              payload: { ...providerThread, status: "active" },
+            },
+          ],
+        });
+        const queue = (yield* Ref.get(state)).eventQueues.get(String(providerSessionId));
+        assert.isDefined(queue);
+        const afterSequence = yield* eventSink.latestSequence({ threadId });
+        const persisted = yield* eventSink
+          .stream({ threadId, afterSequence, eventType: "provider-thread.updated" })
+          .pipe(Stream.runHead, Effect.forkChild);
+        yield* Queue.offer(queue!, {
+          type: "provider_thread.updated",
+          driver: CODEX_DRIVER,
+          providerThread: {
+            ...providerThread,
+            extensionUi: {
+              providerSessionId,
+              nativeThreadId: providerThread.nativeThreadRef!.nativeId!,
+              title: "Idle fixture",
+              statuses: [],
+              widgets: [],
+              notices: [],
+              editor: null,
+            },
+          },
+        });
+        assert.isTrue(Option.isSome(yield* Fiber.join(persisted)));
+        const projection = yield* projectionStore.getThreadProjection(threadId);
+        const stored = projection.providerThreads.find((thread) => thread.id === providerThread.id);
+        assert.equal(stored?.extensionUi?.title, "Idle fixture");
+        assert.equal(stored?.status, "active");
+      }).pipe(Effect.provide(layerTest({ state, idleTimeoutMs: 60000 })));
+    }),
+);

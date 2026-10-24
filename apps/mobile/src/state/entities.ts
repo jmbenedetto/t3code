@@ -1,5 +1,6 @@
 import { useAtomValue } from "@effect/atom-react";
 import { deriveReportedModelSelection } from "@t3tools/client-runtime/state/thread-execution";
+import { resolveThreadProviderPresentation } from "@t3tools/client-runtime/providerSkills";
 
 import { appAtomRegistry } from "./atom-registry";
 import type {
@@ -236,5 +237,15 @@ export function useThreadReportedModelSelection(ref: ScopedThreadRef | null) {
   return useAtomValue(
     ref === null ? EMPTY_THREAD_ATOM : environmentThreadDetails.threadAtom(ref),
     selectReportedModelSelection,
+  );
+}
+
+const selectProviderPresentation = (thread: EnvironmentThread | null) =>
+  resolveThreadProviderPresentation(thread?.projection);
+
+export function useThreadProviderPresentation(ref: ScopedThreadRef | null) {
+  return useAtomValue(
+    ref === null ? EMPTY_THREAD_ATOM : environmentThreadDetails.threadAtom(ref),
+    selectProviderPresentation,
   );
 }

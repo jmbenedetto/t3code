@@ -11,6 +11,7 @@ import { useAtomValue } from "@effect/atom-react";
 import {
   useChildThreadInputs,
   useThreadReportedModelSelection,
+  useThreadProviderPresentation,
   useThreadShell,
 } from "../../state/entities";
 import { UsageLimitRecoveryCard } from "./UsageLimitRecoveryCard";
@@ -502,6 +503,7 @@ function ThreadVisitWatermark(props: {
 }
 
 export const ThreadDetailScreen = function ThreadDetailScreen(props: ThreadDetailScreenProps) {
+  const providerPresentationThread = useThreadProviderPresentation(props.selectedThreadDetailRef);
   const usesNativeWorkspaceColumns = useNativeWorkspaceColumnsSupported();
   const deviceType = useDeviceType();
   const workspace = useWorkspaceTabs();
@@ -1210,7 +1212,11 @@ export const ThreadDetailScreen = function ThreadDetailScreen(props: ThreadDetai
       (candidate) => candidate.instanceId === selectedInstanceId,
     );
     return provider
-      ? resolveProviderSkillsForCwd(provider, props.threadCwd ?? props.projectWorkspaceRoot)
+      ? resolveProviderSkillsForCwd(
+          provider,
+          props.threadCwd ?? props.projectWorkspaceRoot,
+          providerPresentationThread,
+        )
       : [];
   })();
 
@@ -1759,6 +1765,7 @@ export const ThreadDetailScreen = function ThreadDetailScreen(props: ThreadDetai
                   ) : (
                     <>
                       <ThreadComposer
+                        providerThread={providerPresentationThread}
                         isDraft={Boolean(props.draftMode)}
                         canOperateThread={props.canOperateThread}
                         reportedModelSelection={reportedModelSelection}
